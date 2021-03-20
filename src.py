@@ -2,8 +2,14 @@ import datetime
 import typing as typ
 from pathlib import Path
 import os
+from itertools import chain
+import mimetypes
 
 import mutagen
+import mutagen.mp3
+import mutagen.id3
+import mutagen.flac
+import PIL
 
 
 PICS_EXTENSIONS = ['jpeg', 'jpg', 'png', 'bmp']
@@ -13,11 +19,11 @@ class ABCArchive:
     def __init__(self, path: str):
         self.path = Path(path)
 
-    def get_dirs_tracks(self) -> typ.Dict[Path, typ.List[mutagen.File]]:
+    def get_dirs_tracks(self, *, easy) -> typ.Dict[Path, typ.List[mutagen.File]]:
         dir_tracks = dict()
         for root, _, files in os.walk(self.path):
             dir_path = Path(root)
-            tracks = (mutagen.File(dir_path/file_name, easy=True) for file_name in files)
+            tracks = (mutagen.File(dir_path/file_name, easy=easy) for file_name in files)
             dir_tracks[dir_path] = [t for t in tracks if t is not None]
         return dir_tracks
 
@@ -92,6 +98,8 @@ class ArtistArchive(ABCArchive):
 
 
 class AlbumArchive(ABCArchive):
+    COVER_SIZE_LIMIT_PX = (800, 600)
+
     def __init__(self, path: str, album_name: str):
         super().__init__(path)
         self.album_name = album_name
@@ -99,7 +107,7 @@ class AlbumArchive(ABCArchive):
 
     def set_album_tag(self):
         folded_album_name = self.album_name.casefold()
-        for _, track_list in self.get_dirs_tracks():
+        for _, track_list in self.get_dirs_tracks(easy=True):
             for track in track_list:
                 if 'album' not in track.tags or folded_album_name not in track.tags['album']:
                     track.tags['album'] = self.album_name
@@ -114,7 +122,7 @@ class AlbumArchive(ABCArchive):
         dir_tracks_number = dict()
         dir_tracks_total = dict()
 
-        for dir_path, track_list in self.get_dirs_tracks().items():
+        for dir_path, track_list in self.get_dirs_tracks(easy=True).items():
             tracks_number = dict()
             tracks_total = dict()
             for track in track_list:
@@ -129,8 +137,63 @@ class AlbumArchive(ABCArchive):
 
         return dir_tracks_number, dir_tracks_total
 
+    def set_cover(self):
+        ordered_cover_fname_patterns = list(chain(
+            [f'cover.{ext}' for ext in PICS_EXTENSIONS],
+            [f'*cover*.{ext}' for ext in PICS_EXTENSIONS],
+            [f'*.{ext}' for ext in PICS_EXTENSIONS]
+        ))
+
+        root_cover_candidates = list(chain(*(
+            self.path.glob(pattern) for pattern in ordered_cover_fname_patterns
+        )))
+
+        any_pictures = list(chain(*(
+            self.path.rglob(f'*.{ext}') for ext in PICS_EXTENSIONS
+        )))
+
+        if any_pictures:
+            for dir_path, track_list in self.get_dirs_tracks(easy=False).items():
+                cover_candidates_from_this_dir = list(chain(*(
+                    dir_path.glob(pattern) for pattern in ordered_cover_fname_patterns
+                )))
+
+                cover_candidates = cover_candidates_from_this_dir + root_cover_candidates + any_pictures
+                cover_path = cover_candidates[0]
+                with PIL.Image.open(cover_path) as cover:
+                    # TODO move to func
+                    if cover.width > self.COVER_SIZE_LIMIT_PX[0] or cover.self.COVER_SIZE_LIMIT_PX[1]:
+                        resize_proportion = min([
+                            self.COVER_SIZE_LIMIT_PX[0] / cover.width,
+                            self.COVER_SIZE_LIMIT_PX[1] / cover.height,
+                            1
+                        ])
+                        new_size = (int(cover.width * resize_proportion),
+                                    int(cover.height * resize_proportion))
+
+                        # TODO try image.tumbnail
+
+
+                    for track in track_list:
+                        if isinstance(track, mutagen.mp3.MP3):
+                            track.tags.add_tag(mutagen.id3.APIC(
+                                encoding=3,
+                                mime=mimetypes.guess_type(cover_path)[0],
+                                type=3,
+                                desc=u'cover',
+                                data=cover.tobytes()
+                            ))
+                            track.save()
+                        if isinstance(track, mutagen.flac.FLAC):
+                            pic = mutagen.flac.Picture()
+                            pic.data = cover.tobytes()
+                            pic.mime = mimetypes.guess_type(cover_path)[0]
+                            pic.type = 3
+                            pic.desc = u'cover'
+                            track.add_picture(pic)
+                            track.save()
+
     def update(self):
-        # TODO coding check
         self.set_album_tag()
 
         dirs_tracks_number, dirs_tracks_total = self.get_dirs_tracks_number_and_dirs_tracks_total()  # TODO rename
@@ -148,7 +211,6 @@ class AlbumArchive(ABCArchive):
             if len(correct_track_numbers) == len(dirs_tracks_number[directory]):
                 track_filename_pattern = '{tracknumber}. {track_name}'
 
-            # TODO
             for track_path in dirs_tracks_number:
                 track = mutagen.File(track_path, easy=True)
                 if 'title' in track.tags:
