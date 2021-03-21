@@ -30,7 +30,7 @@ class Track:
         # lyric?
     ]
 
-    tags: typ.Dict[str, typ.Optional[str]]
+    is_modified: bool
 
     def __init__(self, path: Path):
         if path.suffix.lstrip('.') not in self.AVAILABLE_TRACK_EXTENSIONS:
@@ -51,7 +51,7 @@ class Track:
             else:
                 date = None
 
-            self.tags = {
+            self.__tags = {
                 'title': m_file['TIT2'].text[0] if 'TIT2' in m_file else None,
                 'artist': m_file['TPE1'].text[0] if 'TPE1' in m_file else None,
                 'album': m_file['TALB'].text[0] if 'TALB' in m_file else None,
@@ -62,7 +62,7 @@ class Track:
             }
         elif isinstance(m_file, mutagen.flac.FLAC):
 
-            self.tags = {
+            self.__tags = {
                 'title': m_file['title'][0] if 'title' in m_file else None,
                 'artist': m_file['artist'][0] if 'artist' in m_file else None,
                 'album': m_file['album'][0] if 'album' in m_file else None,
@@ -72,44 +72,62 @@ class Track:
                 'genre': m_file['genre'][0] if 'genre' in m_file else None
             }
 
-    @property
-    def path(self):
+        self.is_modified = False
+
+    def get_path(self):
         return self.__path
 
+    def get_tags(self):
+        return self.__tags.copy()
+
+    def get_tag(self, tag):
+        if tag not in self.TAG_ALIASES:
+            raise ValueError(f'unexpected tag alias: {tag}')
+
+        return self.__tags[tag]
+
+    def set_tag(self, tag, value):
+        self.is_modified = True
+
+        if tag not in self.TAG_ALIASES:
+            raise ValueError(f'unexpected tag alias: {tag}')
+
+        self.__tags[tag] = value
+
+    def remove_tag(self, tag):
+        self.set_tag(tag, None)
+
     def write(self):
-        unexpected_tags = self.tags.keys() - self.TAG_ALIASES
-        if self.tags.keys() - self.TAG_ALIASES:
-            raise ValueError(f'unexpected tags aliases: {unexpected_tags}')
+        if self.is_modified:
+            if isinstance(self.__mutagen_file, mutagen.mp3.MP3):
+                self._fill_tags_to_mp3_mfile()
+            elif isinstance(self.__mutagen_file, mutagen.flac.FLAC):
+                self._fill_tags_to_flac_mfile()
 
-        if isinstance(self.__mutagen_file, mutagen.mp3.MP3):
-            self._fill_tags_to_mp3_mfile()
-        elif isinstance(self.__mutagen_file, mutagen.flac.FLAC):
-            self._fill_tags_to_flac_mfile()
-
-        self.__mutagen_file.save()
+            self.__mutagen_file.save()
 
     def _fill_tags_to_mp3_mfile(self):
         m_file = self.__mutagen_file
         if isinstance(m_file, mutagen.mp3.MP3):
-            title_val = self.tags.get('title')
+            title_val = self.__tags.get('title')
             if title_val is not None:
                 m_file.tags.add(mutagen.id3.TIT2(text = str(title_val)))
             elif 'TIT2' in m_file.tags:
                 del m_file.tags['TIT2']
 
-            artist_val = self.tags.get('artist')
+            artist_val = self.__tags.get('artist')
             if artist_val is not None:
                 m_file.tags.add(mutagen.id3.TPE1(text = str(artist_val)))
             elif 'TPE1' in m_file.tags:
                 del m_file.tags['TPE1']
 
-            album_val = self.tags.get('album')
+            album_val = self.__tags.get('album')
             if album_val is not None:
                 m_file.tags.add(mutagen.id3.TALB(text = str(album_val)))
             elif 'TALB' in m_file.tags:
                 del m_file.tags['TALB']
 
-            date_val = self.tags.get('date')
+            date_val = self.__tags.get('date')
             if date_val is not None:
                 if m_file.tags.version == (2, 3, 0):
                     m_file.tags.add(mutagen.id3.TDAT(text = str(date_val)))
@@ -122,19 +140,19 @@ class Track:
             elif 'TYER' in m_file.tags:
                 del m_file['TYER']
 
-            composer_val = self.tags.get('composer')
+            composer_val = self.__tags.get('composer')
             if composer_val is not None:
                 m_file.tags.add(mutagen.id3.TCOM(text = str(composer_val)))
             elif 'TCOM' in m_file.tags:
                 del m_file.tags['TCOM']
 
-            tracknumber_val = self.tags.get('tracknumber')
+            tracknumber_val = self.__tags.get('tracknumber')
             if tracknumber_val is not None:
                 m_file.tags.add(mutagen.id3.TRCK(text = str(tracknumber_val)))
             elif 'TRCK' in m_file.tags:
                 del m_file.tags['TRCK']
 
-            genre_val = self.tags.get('genre')
+            genre_val = self.__tags.get('genre')
             if genre_val is not None:
                 m_file.tags.add(mutagen.id3.TCON(text = str(genre_val)))
             elif 'TCON' in m_file.tags:
@@ -142,7 +160,7 @@ class Track:
 
     def _fill_tags_to_flac_mfile(self):
         for tag in self.TAG_ALIASES:
-            tag_val = self.tags.get(tag)
+            tag_val = self.__tags.get(tag)
             if tag_val is not None:
                 self.__mutagen_file[tag] = str(tag_val)
             elif tag in self.__mutagen_file.tags:
@@ -155,6 +173,8 @@ class Track:
             return bool(self.__mutagen_file.pictures)
 
     def clear_pics(self):
+        self.is_modified = True
+
         m_file = self.__mutagen_file
         if isinstance(m_file, mutagen.mp3.MP3):
             for id3_tag in list(m_file.tags.keys()):
@@ -163,9 +183,11 @@ class Track:
         elif isinstance(m_file, mutagen.flac.FLAC):
             m_file.clear_pictures()
 
-    def add_cover(self, *, data: bytes, mimetype: str):
+    def set_cover(self, *, data: bytes, mimetype: str):
         if mimetype not in self.AVAILABLE_PICS_MIMETYPES:
             raise ValueError('unexpected picture mimetype')
+
+        self.is_modified = True
 
         if isinstance(self.__mutagen_file, mutagen.mp3.MP3):
             self.__mutagen_file.tags.add(mutagen.id3.APIC(
