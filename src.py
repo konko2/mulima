@@ -15,6 +15,175 @@ import PIL
 PICS_EXTENSIONS = ['jpeg', 'jpg', 'png', 'bmp']
 
 
+class Track:
+    AVAILABLE_PICS_MIMETYPES = ['image/jpeg', 'image/png', 'image/bmp']
+    AVAILABLE_TRACK_EXTENSIONS = ['mp3', 'flac']  # wav, m4a, aac
+    TAG_ALIASES = [
+        'title',
+        'artist',
+        'album',
+        'date',
+        'composer',
+        'tracknumber',
+        'genre'
+        # quality?
+        # lyric?
+    ]
+
+    tags: typ.Dict[str, typ.Optional[str]]
+
+    def __init__(self, path: Path):
+        if path.suffix.lstrip('.') not in self.AVAILABLE_TRACK_EXTENSIONS:
+            raise ValueError(f"given track has extension '{path.suffix.lstrip('.')}', "
+                             f"but should be one of follow: {self.AVAILABLE_TRACK_EXTENSIONS}")
+
+        self.__path = path
+        self.__mutagen_file = m_file = mutagen.File(path)
+        self.new_cover = None
+
+        if isinstance(m_file, mutagen.mp3.MP3):
+            if 'TDRC' in m_file:
+                date = m_file['TDRC'].text[0]
+            elif 'TDAT' in m_file:
+                date = m_file['TDAT'].text[0]
+            elif 'TYER' in m_file:
+                date = m_file['TYER'].text[0]
+            else:
+                date = None
+
+            self.tags = {
+                'title': m_file['TIT2'].text[0] if 'TIT2' in m_file else None,
+                'artist': m_file['TPE1'].text[0] if 'TPE1' in m_file else None,
+                'album': m_file['TALB'].text[0] if 'TALB' in m_file else None,
+                'date': date,
+                'composer': m_file['TCOM'].text[0] if 'TCOM' in m_file else None,
+                'tracknumber': m_file['TRCK'].text[0] if 'TRCK' in m_file else None,
+                'genre': m_file['TCON'].text[0] if 'TCON' in m_file else None
+            }
+        elif isinstance(m_file, mutagen.flac.FLAC):
+
+            self.tags = {
+                'title': m_file['title'][0] if 'title' in m_file else None,
+                'artist': m_file['artist'][0] if 'artist' in m_file else None,
+                'album': m_file['album'][0] if 'album' in m_file else None,
+                'date': m_file['date'][0] if 'date' in m_file else None,
+                'composer': m_file['composer'][0] if 'composer' in m_file else None,
+                'tracknumber': m_file['tracknumber'][0] if 'tracknumber' in m_file else None,
+                'genre': m_file['genre'][0] if 'genre' in m_file else None
+            }
+
+    @property
+    def path(self):
+        return self.__path
+
+    def write(self):
+        unexpected_tags = self.tags.keys() - self.TAG_ALIASES
+        if self.tags.keys() - self.TAG_ALIASES:
+            raise ValueError(f'unexpected tags aliases: {unexpected_tags}')
+
+        if isinstance(self.__mutagen_file, mutagen.mp3.MP3):
+            self._fill_tags_to_mp3_mfile()
+        elif isinstance(self.__mutagen_file, mutagen.flac.FLAC):
+            self._fill_tags_to_flac_mfile()
+
+        self.__mutagen_file.save()
+
+    def _fill_tags_to_mp3_mfile(self):
+        m_file = self.__mutagen_file
+        if isinstance(m_file, mutagen.mp3.MP3):
+            title_val = self.tags.get('title')
+            if title_val is not None:
+                m_file.tags.add(mutagen.id3.TIT2(text = str(title_val)))
+            elif 'TIT2' in m_file.tags:
+                del m_file.tags['TIT2']
+
+            artist_val = self.tags.get('artist')
+            if artist_val is not None:
+                m_file.tags.add(mutagen.id3.TPE1(text = str(artist_val)))
+            elif 'TPE1' in m_file.tags:
+                del m_file.tags['TPE1']
+
+            album_val = self.tags.get('album')
+            if album_val is not None:
+                m_file.tags.add(mutagen.id3.TALB(text = str(album_val)))
+            elif 'TALB' in m_file.tags:
+                del m_file.tags['TALB']
+
+            date_val = self.tags.get('date')
+            if date_val is not None:
+                if m_file.tags.version == (2, 3, 0):
+                    m_file.tags.add(mutagen.id3.TDAT(text = str(date_val)))
+                elif m_file.tags.version == (2, 4, 0):
+                    m_file.tags.add(mutagen.id3.TDRC(text = str(date_val)))
+            elif 'TDAT' in m_file.tags:
+                del m_file['TDAT']
+            elif 'TDRC' in m_file.tags:
+                del m_file['TDRC']
+            elif 'TYER' in m_file.tags:
+                del m_file['TYER']
+
+            composer_val = self.tags.get('composer')
+            if composer_val is not None:
+                m_file.tags.add(mutagen.id3.TCOM(text = str(composer_val)))
+            elif 'TCOM' in m_file.tags:
+                del m_file.tags['TCOM']
+
+            tracknumber_val = self.tags.get('tracknumber')
+            if tracknumber_val is not None:
+                m_file.tags.add(mutagen.id3.TRCK(text = str(tracknumber_val)))
+            elif 'TRCK' in m_file.tags:
+                del m_file.tags['TRCK']
+
+            genre_val = self.tags.get('genre')
+            if genre_val is not None:
+                m_file.tags.add(mutagen.id3.TCON(text = str(genre_val)))
+            elif 'TCON' in m_file.tags:
+                del m_file.tags['TCON']
+
+    def _fill_tags_to_flac_mfile(self):
+        for tag in self.TAG_ALIASES:
+            tag_val = self.tags.get(tag)
+            if tag_val is not None:
+                self.__mutagen_file[tag] = str(tag_val)
+            elif tag in self.__mutagen_file.tags:
+                del self.__mutagen_file.tags[tag]
+
+    def has_pics(self) -> bool:
+        if isinstance(self.__mutagen_file, mutagen.mp3.MP3):
+            return any(id3_tag.startswith('APIC') for id3_tag in self.__mutagen_file.tags.keys())
+        elif isinstance(self.__mutagen_file, mutagen.flac.FLAC):
+            return bool(self.__mutagen_file.pictures)
+
+    def clear_pics(self):
+        m_file = self.__mutagen_file
+        if isinstance(m_file, mutagen.mp3.MP3):
+            for id3_tag in list(m_file.tags.keys()):
+                if id3_tag.startswith('APIC'):
+                    del m_file.tags[id3_tag]
+        elif isinstance(m_file, mutagen.flac.FLAC):
+            m_file.clear_pictures()
+
+    def add_cover(self, *, data: bytes, mimetype: str):
+        if mimetype not in self.AVAILABLE_PICS_MIMETYPES:
+            raise ValueError('unexpected picture mimetype')
+
+        if isinstance(self.__mutagen_file, mutagen.mp3.MP3):
+            self.__mutagen_file.tags.add(mutagen.id3.APIC(
+                encoding=3,
+                mime=mimetype,
+                type=3,
+                desc=u'cover',
+                data=data
+            ))
+        if isinstance(self.__mutagen_file, mutagen.flac.FLAC):
+            pic = mutagen.flac.Picture()
+            pic.data = data
+            pic.mime = mimetype
+            pic.type = 3
+            pic.desc = u'cover'
+            self.__mutagen_file.add_picture(pic)
+
+
 class ABCArchive:
     def __init__(self, path: str):
         self.path = Path(path)
@@ -115,6 +284,7 @@ class AlbumArchive(ABCArchive):
 
     # TODO: rename
     # TODO: remove?
+    # TODO: rm tracktotal
     def get_dirs_tracks_number_and_dirs_tracks_total(self) -> typ.Tuple[
         typ.Dict[Path, typ.Dict[Path, typ.Optional[int]]],
         typ.Dict[Path, typ.Dict[Path, typ.Optional[int]]]
@@ -230,6 +400,14 @@ class PlaylistArchive(ABCArchive):
     # numerate filenames by adding time
 
 # My player can see only first elements from text frames lists
+
+
+class SoundCloudArchive(ABCArchive):
+    pass
+
+
+class SpotifyArchive(ABCArchive):
+    pass
 
 
 if __name__ == '__main__':
